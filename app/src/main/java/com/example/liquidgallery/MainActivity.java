@@ -27,30 +27,18 @@ public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQUEST_CODE = 100;
     private ArrayList<Uri> imageUris;
     private ImageAdapter imageAdapter;
+    private GridView gridView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        // Set deep water-dark background color window-wide (Liquid Theme)
-        getWindow().getDecorView().setBackgroundColor(0xFF0B0F19);
+        setContentView(R.layout.activity_main);
 
         imageUris = new ArrayList<>();
         imageAdapter = new ImageAdapter();
-        
-        // Initialize GridView for media items
-        GridView gridView = new GridView(this);
-        gridView.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-        gridView.setNumColumns(3);
-        gridView.setHorizontalSpacing(12);
-        gridView.setVerticalSpacing(12);
-        gridView.setPadding(16, 16, 16, 16);
-        gridView.setAdapter(imageAdapter);
 
-        setContentView(gridView);
+        gridView = findViewById(R.id.gridView);
+        gridView.setAdapter(imageAdapter);
 
         checkAndRequestPermissions();
     }
@@ -125,7 +113,7 @@ public class MainActivity extends AppCompatActivity {
             ImageView imageView;
             if (convertView == null) {
                 imageView = new ImageView(MainActivity.this);
-                imageView.setLayoutParams(new GridView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 320));
+                imageView.setLayoutParams(new GridView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 300));
                 imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
             } else {
                 imageView = (ImageView) convertView;
