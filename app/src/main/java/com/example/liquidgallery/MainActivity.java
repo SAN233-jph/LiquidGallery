@@ -13,7 +13,6 @@ import android.view.ViewGroup;
 import android.widget.BaseAdapter;
 import android.widget.GridView;
 import android.widget.ImageView;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -28,14 +27,15 @@ public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQUEST_CODE = 100;
     private ArrayList<Uri> imageUris;
     private ImageAdapter imageAdapter;
-    private GridView gridView;
-    private TextView titleTextView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        
-        // Build a clean programmatic layout matching the liquid theme
+
+        // Set deep water-dark background color window-wide
+        getWindow().getDecorView().setBackgroundColor(0xFF0B0F19);
+
+        // Create root GlassPanel container for the liquid theme
         GlassPanel rootLayout = new GlassPanel(this);
         rootLayout.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -43,20 +43,24 @@ public class MainActivity extends AppCompatActivity {
         ));
         rootLayout.setPadding(24, 24, 24, 24);
 
-        // Set deep water-dark background
-        getWindow().getDecorView().setBackgroundColor(0xFF0B0F19);
-
         imageUris = new ArrayList<>();
         imageAdapter = new ImageAdapter();
         
         // Initialize GridView for media items
-        gridView = new GridView(this);
+        GridView gridView = new GridView(this);
+        gridView.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
         gridView.setNumColumns(3);
         gridView.setHorizontalSpacing(12);
         gridView.setVerticalSpacing(12);
         gridView.setAdapter(imageAdapter);
 
-        setContentView(gridView);
+        // Nest the GridView inside the GlassPanel container
+        rootLayout.addView(gridView);
+        setContentView(rootLayout);
+
         checkAndRequestPermissions();
     }
 
@@ -111,22 +115,22 @@ public class MainActivity extends AppCompatActivity {
 
     private class ImageAdapter extends BaseAdapter {
         @Override
-        int getCount() {
+        public int getCount() {
             return imageUris.size();
         }
 
         @Override
-        Object getItem(int position) {
+        public Object getItem(int position) {
             return imageUris.get(position);
         }
 
         @Override
-        long getItemId(int position) {
+        public long getItemId(int position) {
             return position;
         }
 
         @Override
-        View getView(int position, View convertView, ViewGroup parent) {
+        public View getView(int position, View convertView, ViewGroup parent) {
             ImageView imageView;
             if (convertView == null) {
                 imageView = new ImageView(MainActivity.this);
