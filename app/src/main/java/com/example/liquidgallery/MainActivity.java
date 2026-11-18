@@ -32,16 +32,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Set deep water-dark background color window-wide
+        // Set deep water-dark background color window-wide (Liquid Theme)
         getWindow().getDecorView().setBackgroundColor(0xFF0B0F19);
-
-        // Create root GlassPanel container for the liquid theme
-        GlassPanel rootLayout = new GlassPanel(this);
-        rootLayout.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-        rootLayout.setPadding(24, 24, 24, 24);
 
         imageUris = new ArrayList<>();
         imageAdapter = new ImageAdapter();
@@ -55,11 +47,10 @@ public class MainActivity extends AppCompatActivity {
         gridView.setNumColumns(3);
         gridView.setHorizontalSpacing(12);
         gridView.setVerticalSpacing(12);
+        gridView.setPadding(16, 16, 16, 16);
         gridView.setAdapter(imageAdapter);
 
-        // Nest the GridView inside the GlassPanel container
-        rootLayout.addView(gridView);
-        setContentView(rootLayout);
+        setContentView(gridView);
 
         checkAndRequestPermissions();
     }
