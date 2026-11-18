@@ -1,122 +1,144 @@
 package com.example.liquidgallery;
 
-import android.content.Context;
-import android.graphics.Canvas;
-import android.graphics.LinearGradient;
-import android.graphics.Outline;
-import android.graphics.Paint;
-import android.graphics.RectF;
-import android.graphics.RenderEffect;
-import android.graphics.RuntimeShader;
-import android.graphics.Shader;
+import android.Manifest;
+import android.content.ContentUris;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.provider.MediaStore;
 import android.view.View;
-import android.view.ViewOutlineProvider;
-import android.widget.FrameLayout;
+import android.view.ViewGroup;
+import android.widget.BaseAdapter;
+import android.widget.GridView;
+import android.widget.ImageView;
+import android.widget.TextView;
+import android.widget.Toast;
 
-/**
- * Liquid-glass panel: draws a live copy of whatever is behind it (the "source" view),
- * blurs it, bends it near the rim (refraction), boosts colour, then adds glossy edges.
- */
-public class GlassPanel extends FrameLayout {
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
-    private static final String AGSL =
-            "uniform shader content;\n"
-          + "uniform float2 size;\n"
-          + "uniform float radius;\n"
-          + "float sd(float2 p) {\n"
-          + "  float2 c = p - size * 0.5;\n"
-          + "  float2 q = abs(c) - (size * 0.5 - float2(radius));\n"
-          + "  return length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - radius;\n"
-          + "}\n"
-          + "half4 main(float2 p) {\n"
-          + "  float d = sd(p);\n"
-          + "  float e = clamp(-d / 22.0, 0.0, 1.0);\n"
-          + "  float k = pow(1.0 - e, 2.5) * 16.0;\n"
-          + "  float2 g = float2(sd(p + float2(1.0, 0.0)) - sd(p - float2(1.0, 0.0)),\n"
-          + "                    sd(p + float2(0.0, 1.0)) - sd(p - float2(0.0, 1.0)));\n"
-          + "  float2 uv = clamp(p - normalize(g + float2(0.0001)) * k, float2(1.0), size - float2(1.0));\n"
-          + "  half4 c = content.eval(uv);\n"
-          + "  half l = dot(c.rgb, half3(0.299, 0.587, 0.114));\n"
-          + "  c.rgb = half3(l) + (c.rgb - half3(l)) * 1.35 + half3(0.07);\n"
-          + "  return c;\n"
-          + "}\n";
+import java.util.ArrayList;
 
-    private final View source;
-    private final float radius;
-    private final Backdrop backdrop;
-    private final RuntimeShader shader = new RuntimeShader(AGSL);
-    private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint gloss = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final RectF rect = new RectF();
+public class MainActivity extends AppCompatActivity {
 
-    public GlassPanel(Context ctx, View source, float radiusPx) {
-        super(ctx);
-        this.source = source;
-        this.radius = radiusPx;
-        setWillNotDraw(false);
-        backdrop = new Backdrop(ctx);
-        addView(backdrop, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-        setOutlineProvider(new ViewOutlineProvider() {
-            @Override public void getOutline(View v, Outline o) {
-                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(),
-                        Math.min(radius, Math.min(v.getWidth(), v.getHeight()) / 2f));
+    private static final int PERMISSION_REQUEST_CODE = 100;
+    private ArrayList<Uri> imageUris;
+    private ImageAdapter imageAdapter;
+    private GridView gridView;
+    private TextView titleTextView;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        
+        // Build a clean programmatic layout matching the liquid theme
+        GlassPanel rootLayout = new GlassPanel(this);
+        rootLayout.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        rootLayout.setPadding(24, 24, 24, 24);
+
+        // Set deep water-dark background
+        getWindow().getDecorView().setBackgroundColor(0xFF0B0F19);
+
+        imageUris = new ArrayList<>();
+        imageAdapter = new ImageAdapter();
+        
+        // Initialize GridView for media items
+        gridView = new GridView(this);
+        gridView.setNumColumns(3);
+        gridView.setHorizontalSpacing(12);
+        gridView.setVerticalSpacing(12);
+        gridView.setAdapter(imageAdapter);
+
+        setContentView(gridView);
+        checkAndRequestPermissions();
+    }
+
+    private void checkAndRequestPermissions() {
+        String permission;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permission = Manifest.permission.READ_MEDIA_IMAGES;
+        } else {
+            permission = Manifest.permission.READ_EXTERNAL_STORAGE;
+        }
+
+        if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) {
+            loadImages();
+        } else {
+            ActivityCompat.requestPermissions(this, new String[]{permission}, PERMISSION_REQUEST_CODE);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                loadImages();
+            } else {
+                Toast.makeText(this, "Storage permission is required to load gallery items.", Toast.LENGTH_LONG).show();
             }
-        });
-        setClipToOutline(true);
-        setElevation(14f * ctx.getResources().getDisplayMetrics().density);
-        stroke.setStyle(Paint.Style.STROKE);
-        stroke.setStrokeWidth(2.5f);
-        gloss.setStyle(Paint.Style.FILL);
+        }
     }
 
-    /** Call whenever the content behind the panel changes (scroll, animation, new image). */
-    public void refresh() {
-        backdrop.invalidate();
+    private void loadImages() {
+        imageUris.clear();
+        Uri uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+        String[] projection = {MediaStore.Images.Media._ID};
+        String sortOrder = MediaStore.Images.Media.DATE_ADDED + " DESC";
+
+        try (Cursor cursor = getContentResolver().query(uri, projection, null, null, sortOrder)) {
+            if (cursor != null) {
+                int idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID);
+                while (cursor.moveToNext()) {
+                    long id = cursor.getLong(idColumn);
+                    Uri imageUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                    imageUris.add(imageUri);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        imageAdapter.notifyDataSetChanged();
     }
 
-    @Override
-    protected void onSizeChanged(int w, int h, int ow, int oh) {
-        super.onSizeChanged(w, h, ow, oh);
-        if (w == 0 || h == 0) return;
-        shader.setFloatUniform("size", (float) w, (float) h);
-        shader.setFloatUniform("radius", Math.min(radius, Math.min(w, h) / 2f));
-        backdrop.setRenderEffect(RenderEffect.createChainEffect(
-                RenderEffect.createRuntimeShaderEffect(shader, "content"),
-                RenderEffect.createBlurEffect(10f, 10f, Shader.TileMode.CLAMP)));
-        stroke.setShader(new LinearGradient(0, 0, w, h,
-                new int[]{0xDDFFFFFF, 0x14FFFFFF, 0x14FFFFFF, 0xAAFFFFFF},
-                new float[]{0f, 0.4f, 0.6f, 1f}, Shader.TileMode.CLAMP));
-        gloss.setShader(new LinearGradient(0, 0, 0, h * 0.6f,
-                0x40FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
-    }
-
-    @Override
-    protected void dispatchDraw(Canvas c) {
-        super.dispatchDraw(c);
-        float w = getWidth(), h = getHeight();
-        float r = Math.min(radius, Math.min(w, h) / 2f);
-        rect.set(1.5f, 1.5f, w - 1.5f, h - 1.5f);
-        c.drawRoundRect(rect, r, r, gloss);
-        c.drawRoundRect(rect, r, r, stroke);
-    }
-
-    private class Backdrop extends View {
-        Backdrop(Context ctx) {
-            super(ctx);
+    private class ImageAdapter extends BaseAdapter {
+        @Override
+        int getCount() {
+            return imageUris.size();
         }
 
         @Override
-        protected void onDraw(Canvas canvas) {
-            canvas.drawColor(0xFF101216);
-            int[] a = new int[2];
-            int[] b = new int[2];
-            source.getLocationInWindow(a);
-            getLocationInWindow(b);
-            canvas.save();
-            canvas.translate(a[0] - b[0], a[1] - b[1]);
-            source.draw(canvas);
-            canvas.restore();
-            canvas.drawColor(0x22FFFFFF);
+        Object getItem(int position) {
+            return imageUris.get(position);
+        }
+
+        @Override
+        long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        View getView(int position, View convertView, ViewGroup parent) {
+            ImageView imageView;
+            if (convertView == null) {
+                imageView = new ImageView(MainActivity.this);
+                imageView.setLayoutParams(new GridView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 320));
+                imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            } else {
+                imageView = (ImageView) convertView;
+            }
+
+            Uri imageUri = imageUris.get(position);
+            imageView.setImageURI(imageUri);
+            return imageView;
         }
     }
 }
