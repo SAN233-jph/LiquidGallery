@@ -38,12 +38,16 @@ import android.view.animation.OvershootInterpolator;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
-import android.widget.GridView;
+import android.widget.ListView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Locale;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -55,7 +59,9 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
 
-    static class Photo { long id; String name, album; Uri uri; }
+    static class Photo { long id, date; String name, album; Uri uri; }
+    /** type: 0 month title, 1 day title, 2 row of photos, 3 row of albums */
+    static class Row { int type, first, n; String text; }
     static class Item { Photo photo; String title; int count; }
 
     private static final int MATCH = ViewGroup.LayoutParams.MATCH_PARENT;
@@ -63,6 +69,7 @@ public class MainActivity extends Activity {
 
     private final List<Photo> all = new ArrayList<>();
     private final List<Item> items = new ArrayList<>();
+    private final List<Row> rows = new ArrayList<>();
     private final List<Photo> shown = new ArrayList<>();
     private final ExecutorService pool = Executors.newFixedThreadPool(4);
     private final LruCache<Long, Bitmap> cache =
@@ -78,18 +85,18 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private Set<String> favs;
     private int tab = 0, cols = 3, index = 0, loadGen = 0, topInset, botInset, sw;
-    private int side, cellW, tabW, tabPad;
+    private int side, gap, cellW, tabW, tabPad;
     private String album = null;
-    private float zoom = 1f;
-    private boolean viewerOpen, barsVisible = true, favsDirty, hasAccess;
+    private float zoom = 1f, downX;
+    private boolean viewerOpen, barsVisible = true, favsDirty, hasAccess, dragMoved;
     private int openIndex = -1;
     private float openTx, openTy, openScale = 1f;
 
     private FrameLayout root, viewer, stage;
-    private GridView grid;
+    private ListView grid;
     private BaseAdapter adapter;
-    private TextView empty, topTitle, vTitle, heartBtn;
-    private GlassPanel topBar, tabBar, vTop, vBottom;
+    private TextView empty, countText, backText, vTitle, heartBtn;
+    private GlassPanel countPill, backPill, tabBar, vTop, vBottom;
     private View indicator, stageBg;
     private ImageView photoView;
     private final TextView[] tabs = new TextView[3];
@@ -140,24 +147,14 @@ public class MainActivity extends Activity {
         root = new FrameLayout(this);
         root.setBackgroundColor(0xFF000000);
 
-        grid = new GridView(this);
-        grid.setNumColumns(3);
+        grid = new ListView(this);
+        grid.setDivider(null);
+        grid.setDividerHeight(0);
         grid.setClipToPadding(false);
         grid.setVerticalScrollBarEnabled(false);
         grid.setSelector(android.R.color.transparent);
-        adapter = new GridAdapter();
+        adapter = new RowAdapter();
         grid.setAdapter(adapter);
-        grid.setOnItemClickListener((p, v, pos, id) -> {
-            Item it = items.get(pos);
-            if (it.title != null) {
-                album = it.title;
-                rebuild();
-                grid.setSelection(0);
-                popGrid();
-            } else {
-                openViewer(pos, v);
-            }
-        });
         grid.setOnScrollListener(new AbsListView.OnScrollListener() {
             @Override public void onScrollStateChanged(AbsListView v, int s) { }
             @Override public void onScroll(AbsListView v, int a, int b, int c) { refreshGlass(); }
@@ -169,17 +166,34 @@ public class MainActivity extends Activity {
         empty.setPadding(dp(40), 0, dp(40), 0);
         root.addView(empty, new FrameLayout.LayoutParams(MATCH, WRAP, Gravity.CENTER));
 
-        // top title pill
-        topBar = new GlassPanel(this, grid, dp(26));
-        topTitle = text(17, 0xFFFFFFFF);
-        topTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        topTitle.setGravity(Gravity.CENTER);
-        topBar.addView(topTitle, new FrameLayout.LayoutParams(MATCH, MATCH));
-        topBar.setOnClickListener(v -> {
-            bounce(topBar);
-            if (tab == 1 && album != null) goBackAlbum(); else grid.smoothScrollToPosition(0);
+        // total photo count (top right)
+        countPill = new GlassPanel(this, grid, dp(20));
+        countText = text(14, 0xFFFFFFFF);
+        countText.setTypeface(Typeface.DEFAULT_BOLD);
+        countText.setGravity(Gravity.CENTER);
+        countText.setPadding(dp(16), 0, dp(16), 0);
+        countPill.addView(countText, new FrameLayout.LayoutParams(WRAP, MATCH));
+        countPill.setOnClickListener(v -> {
+            bounce(countPill);
+            grid.smoothScrollToPosition(0);
         });
-        root.addView(topBar, new FrameLayout.LayoutParams(sw - dp(96), dp(52), Gravity.TOP | Gravity.CENTER_HORIZONTAL));
+        root.addView(countPill, new FrameLayout.LayoutParams(WRAP, dp(40), Gravity.TOP | Gravity.END));
+
+        // back button (top left), only visible inside an album
+        backPill = new GlassPanel(this, grid, dp(20));
+        backText = text(14, 0xFFFFFFFF);
+        backText.setTypeface(Typeface.DEFAULT_BOLD);
+        backText.setGravity(Gravity.CENTER);
+        backText.setSingleLine(true);
+        backText.setMaxWidth(sw - dp(160));
+        backText.setPadding(dp(16), 0, dp(16), 0);
+        backPill.addView(backText, new FrameLayout.LayoutParams(WRAP, MATCH));
+        backPill.setOnClickListener(v -> {
+            bounce(backPill);
+            goBackAlbum();
+        });
+        backPill.setVisibility(View.GONE);
+        root.addView(backPill, new FrameLayout.LayoutParams(WRAP, dp(40), Gravity.TOP | Gravity.START));
 
         // bottom tab bar with sliding glass indicator
         int barW = sw - dp(56);
@@ -198,15 +212,14 @@ public class MainActivity extends Activity {
         row.setPadding(tabPad, 0, tabPad, 0);
         String[] names = {"Photos", "Albums", "Favorites"};
         for (int i = 0; i < 3; i++) {
-            final int t = i;
             TextView tv = text(14, 0x99FFFFFF);
             tv.setText(names[i]);
             tv.setGravity(Gravity.CENTER);
-            tv.setOnClickListener(v -> selectTab(t));
             row.addView(tv, new LinearLayout.LayoutParams(0, MATCH, 1f));
             tabs[i] = tv;
         }
         tabBar.addView(row, new FrameLayout.LayoutParams(MATCH, MATCH));
+        tabBar.setOnTouchListener((v, e) -> onDockTouch(e));
         root.addView(tabBar, new FrameLayout.LayoutParams(barW, dp(68), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
         styleTabs();
 
@@ -303,11 +316,17 @@ public class MainActivity extends Activity {
     }
 
     private void layoutChrome() {
-        ((FrameLayout.LayoutParams) topBar.getLayoutParams()).topMargin = topInset + dp(10);
+        FrameLayout.LayoutParams cl = (FrameLayout.LayoutParams) countPill.getLayoutParams();
+        cl.topMargin = topInset + dp(10);
+        cl.setMarginEnd(dp(16));
+        FrameLayout.LayoutParams bl = (FrameLayout.LayoutParams) backPill.getLayoutParams();
+        bl.topMargin = topInset + dp(10);
+        bl.setMarginStart(dp(16));
         ((FrameLayout.LayoutParams) vTop.getLayoutParams()).topMargin = topInset + dp(10);
         ((FrameLayout.LayoutParams) tabBar.getLayoutParams()).bottomMargin = botInset + dp(14);
         ((FrameLayout.LayoutParams) vBottom.getLayoutParams()).bottomMargin = botInset + dp(14);
-        topBar.requestLayout();
+        countPill.requestLayout();
+        backPill.requestLayout();
         vTop.requestLayout();
         tabBar.requestLayout();
         vBottom.requestLayout();
@@ -315,7 +334,7 @@ public class MainActivity extends Activity {
     }
 
     private void applyGridPadding() {
-        grid.setPadding(side, topInset + dp(76), side, botInset + dp(104));
+        grid.setPadding(0, topInset + dp(60), 0, botInset + dp(104));
     }
 
     // ---------------------------------------------------------------- data
@@ -324,7 +343,8 @@ public class MainActivity extends Activity {
         pool.execute(() -> {
             List<Photo> out = new ArrayList<>();
             String[] proj = {MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
-                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME};
+                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME, MediaStore.Images.Media.DATE_TAKEN,
+                    MediaStore.Images.Media.DATE_ADDED};
             try (Cursor c = getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj,
                     null, null, MediaStore.Images.Media.DATE_ADDED + " DESC")) {
                 while (c != null && c.moveToNext()) {
@@ -333,9 +353,12 @@ public class MainActivity extends Activity {
                     p.name = c.getString(1);
                     p.album = c.getString(2) == null ? "Other" : c.getString(2);
                     p.uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, p.id);
+                    long taken = c.getLong(3);
+                    p.date = taken > 0 ? taken : c.getLong(4) * 1000L;
                     out.add(p);
                 }
             } catch (Exception ignored) { }
+            Collections.sort(out, (x, y) -> Long.compare(y.date, x.date));
             runOnUiThread(() -> {
                 all.clear();
                 all.addAll(out);
@@ -351,6 +374,7 @@ public class MainActivity extends Activity {
     private void rebuild() {
         items.clear();
         shown.clear();
+        rows.clear();
         boolean albums = tab == 1 && album == null;
         if (albums) {
             Map<String, Item> m = new LinkedHashMap<>();
@@ -369,54 +393,145 @@ public class MainActivity extends Activity {
             for (Photo p : all) {
                 if (tab == 2 && !isFav(p)) continue;
                 if (tab == 1 && !p.album.equals(album)) continue;
-                Item it = new Item();
-                it.photo = p;
-                items.add(it);
                 shown.add(p);
             }
         }
         cols = albums ? 2 : 3;
-        int gap = dp(albums ? 14 : 2);
+        gap = dp(albums ? 14 : 2);
         side = albums ? dp(14) : 0;
-        grid.setNumColumns(cols);
-        grid.setHorizontalSpacing(gap);
-        grid.setVerticalSpacing(gap);
         cellW = (sw - 2 * side - (cols - 1) * gap) / cols;
+        if (albums) {
+            for (int i = 0; i < items.size(); i += cols) addRow(3, i, Math.min(cols, items.size() - i), null);
+        } else if (tab == 0) {
+            buildDated();
+        } else {
+            for (int i = 0; i < shown.size(); i += cols) addRow(2, i, Math.min(cols, shown.size() - i), null);
+        }
         applyGridPadding();
         adapter.notifyDataSetChanged();
-        if (albums) topTitle.setText("Albums");
-        else if (tab == 1) topTitle.setText("‹  " + album);
-        else topTitle.setText((tab == 2 ? "Favorites" : "Photos") + "  ·  " + shown.size());
+        int total = (tab == 0 || albums) ? all.size() : shown.size();
+        countText.setText(String.format(Locale.US, "%,d", total));
+        backPill.setVisibility(tab == 1 && album != null ? View.VISIBLE : View.GONE);
+        if (album != null) backText.setText("\u2039  " + album);
         updateEmpty();
         refreshGlass();
+    }
+
+    private void addRow(int type, int first, int n, String text) {
+        Row r = new Row();
+        r.type = type;
+        r.first = first;
+        r.n = n;
+        r.text = text;
+        rows.add(r);
+    }
+
+    /** Photos tab: a month title, then a title for each day, then rows of 3 photos (newest first). */
+    private void buildDated() {
+        SimpleDateFormat monthFmt = new SimpleDateFormat("MMMM yyyy", Locale.getDefault());
+        SimpleDateFormat dayFmt = new SimpleDateFormat("EEEE, d MMM", Locale.getDefault());
+        SimpleDateFormat dayYearFmt = new SimpleDateFormat("EEEE, d MMM yyyy", Locale.getDefault());
+        Calendar now = Calendar.getInstance();
+        int thisYear = now.get(Calendar.YEAR);
+        int today = thisYear * 1000 + now.get(Calendar.DAY_OF_YEAR);
+        now.add(Calendar.DAY_OF_YEAR, -1);
+        int yesterday = now.get(Calendar.YEAR) * 1000 + now.get(Calendar.DAY_OF_YEAR);
+        Calendar cal = Calendar.getInstance();
+        int lastMonth = -1, lastDay = -1;
+        int i = 0;
+        while (i < shown.size()) {
+            long t = shown.get(i).date;
+            cal.setTimeInMillis(t);
+            int year = cal.get(Calendar.YEAR);
+            int month = year * 100 + cal.get(Calendar.MONTH);
+            int day = year * 1000 + cal.get(Calendar.DAY_OF_YEAR);
+            if (month != lastMonth) {
+                addRow(0, 0, 0, monthFmt.format(new Date(t)));
+                lastMonth = month;
+            }
+            if (day != lastDay) {
+                String label;
+                if (day == today) label = "Today";
+                else if (day == yesterday) label = "Yesterday";
+                else label = (year == thisYear ? dayFmt : dayYearFmt).format(new Date(t));
+                addRow(1, 0, 0, label);
+                lastDay = day;
+            }
+            int j = i;
+            while (j < shown.size() && j - i < cols) {
+                cal.setTimeInMillis(shown.get(j).date);
+                if (cal.get(Calendar.YEAR) * 1000 + cal.get(Calendar.DAY_OF_YEAR) != day) break;
+                j++;
+            }
+            addRow(2, i, j - i, null);
+            i = j;
+        }
     }
 
     private void updateEmpty() {
         if (!hasAccess) empty.setText("Allow photo access to see your photos");
         else if (tab == 2) empty.setText("No favorites yet\nOpen a photo and tap ♥");
         else empty.setText("No photos found");
-        empty.setVisibility(items.isEmpty() ? View.VISIBLE : View.GONE);
+        empty.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
     }
 
     // ---------------------------------------------------------------- tabs
 
-    private void selectTab(int t) {
-        if (t == tab && album == null) {
-            grid.smoothScrollToPosition(0);
-            return;
-        }
+    private int tabAt(float x) {
+        int t = (int) ((x - tabPad) / tabW);
+        return Math.max(0, Math.min(2, t));
+    }
+
+    /** Changes the content of the tab (the glass indicator is moved by the caller). */
+    private void switchTab(int t) {
         tab = t;
         album = null;
         styleTabs();
-        indicator.setScaleX(1.18f);
-        indicator.setScaleY(0.92f);
-        indicator.animate().translationX(tabPad + tab * tabW).scaleX(1f).scaleY(1f)
-                .setDuration(420).setInterpolator(new OvershootInterpolator(1.6f))
-                .setUpdateListener(a -> refreshGlass()).start();
         rebuild();
         grid.setSelection(0);
         popGrid();
         root.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+    }
+
+    /** Dock: tap a tab, or press and drag the glass blob sideways to change tabs. */
+    private boolean onDockTouch(MotionEvent e) {
+        float x = e.getX();
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                dragMoved = false;
+                downX = x;
+                indicator.animate().cancel();
+                indicator.animate().scaleX(1.12f).scaleY(1.08f).setDuration(160)
+                        .setInterpolator(new OvershootInterpolator(2f))
+                        .setUpdateListener(a -> refreshGlass()).start();
+                return true;
+            case MotionEvent.ACTION_MOVE: {
+                if (Math.abs(x - downX) > dp(8)) dragMoved = true;
+                if (!dragMoved) return true;
+                float tx = Math.max(tabPad, Math.min(tabPad + 2 * tabW, x - tabW / 2f));
+                indicator.animate().cancel();
+                indicator.setScaleX(1.12f);
+                indicator.setScaleY(1.08f);
+                indicator.setTranslationX(tx);
+                int hover = tabAt(tx + tabW / 2f);
+                if (hover != tab) switchTab(hover);
+                refreshGlass();
+                return true;
+            }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if (e.getActionMasked() == MotionEvent.ACTION_UP && !dragMoved) {
+                    int t = tabAt(x);
+                    if (t == tab && album == null) grid.smoothScrollToPosition(0);
+                    else switchTab(t);
+                }
+                indicator.animate().translationX(tabPad + tab * tabW).scaleX(1f).scaleY(1f)
+                        .setDuration(460).setInterpolator(new OvershootInterpolator(1.8f))
+                        .setUpdateListener(a -> refreshGlass()).start();
+                return true;
+            default:
+                return true;
+        }
     }
 
     private void styleTabs() {
@@ -469,26 +584,86 @@ public class MainActivity extends Activity {
         }
     }
 
-    private class GridAdapter extends BaseAdapter {
-        @Override public int getCount() { return items.size(); }
-        @Override public Object getItem(int i) { return items.get(i); }
+    /** One line of the list: up to 3 photo cells (or 2 album cells). */
+    private class RowView extends LinearLayout {
+        final Cell[] cells = new Cell[3];
+
+        RowView(Context ctx) {
+            super(ctx);
+            setOrientation(HORIZONTAL);
+            for (int i = 0; i < 3; i++) {
+                cells[i] = new Cell(ctx);
+                addView(cells[i], new LinearLayout.LayoutParams(1, 1));
+            }
+        }
+
+        void bind(Row r) {
+            boolean albumRow = r.type == 3;
+            setLayoutParams(new AbsListView.LayoutParams(MATCH, cellW + gap));
+            setPadding(side, 0, side, gap);
+            for (int i = 0; i < 3; i++) {
+                final Cell c = cells[i];
+                if (i >= r.n) {
+                    c.setVisibility(View.GONE);
+                    continue;
+                }
+                c.setVisibility(View.VISIBLE);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(cellW, cellW);
+                lp.rightMargin = i < cols - 1 ? gap : 0;
+                c.setLayoutParams(lp);
+                c.setOutlineProvider(albumRow ? ROUND : ViewOutlineProvider.BOUNDS);
+                c.setClipToOutline(true);
+                c.label.setVisibility(albumRow ? View.VISIBLE : View.GONE);
+                if (albumRow) {
+                    final Item it = items.get(r.first + i);
+                    c.label.setText(it.title + "\n" + it.count + (it.count == 1 ? " photo" : " photos"));
+                    c.heart.setVisibility(View.GONE);
+                    c.setOnClickListener(v -> {
+                        album = it.title;
+                        rebuild();
+                        grid.setSelection(0);
+                        popGrid();
+                    });
+                    loadThumb(it.photo, c.img);
+                } else {
+                    final int idx = r.first + i;
+                    final Photo p = shown.get(idx);
+                    c.heart.setVisibility(isFav(p) ? View.VISIBLE : View.GONE);
+                    c.setOnClickListener(v -> openViewer(idx, c));
+                    loadThumb(p, c.img);
+                }
+            }
+        }
+    }
+
+    private class RowAdapter extends BaseAdapter {
+        @Override public int getCount() { return rows.size(); }
+        @Override public Object getItem(int i) { return rows.get(i); }
         @Override public long getItemId(int i) { return i; }
+        @Override public int getViewTypeCount() { return 4; }
+        @Override public int getItemViewType(int pos) { return rows.get(pos).type; }
 
         @Override
         public View getView(int pos, View cv, ViewGroup parent) {
-            Cell c = cv instanceof Cell ? (Cell) cv : new Cell(MainActivity.this);
-            Item it = items.get(pos);
-            boolean albumMode = it.title != null;
-            c.setLayoutParams(new AbsListView.LayoutParams(cellW, cellW));
-            c.setOutlineProvider(albumMode ? ROUND : ViewOutlineProvider.BOUNDS);
-            c.setClipToOutline(true);
-            c.label.setVisibility(albumMode ? View.VISIBLE : View.GONE);
-            if (albumMode) {
-                c.label.setText(it.title + "\n" + it.count + (it.count == 1 ? " photo" : " photos"));
+            Row r = rows.get(pos);
+            if (r.type <= 1) {
+                TextView t = cv instanceof TextView ? (TextView) cv : new TextView(MainActivity.this);
+                t.setTypeface(Typeface.DEFAULT_BOLD);
+                if (r.type == 0) {
+                    t.setTextSize(24);
+                    t.setTextColor(0xFFFFFFFF);
+                    t.setPadding(dp(16), dp(22), dp(16), dp(4));
+                } else {
+                    t.setTextSize(14);
+                    t.setTextColor(0xB3FFFFFF);
+                    t.setPadding(dp(16), dp(10), dp(16), dp(8));
+                }
+                t.setText(r.text);
+                return t;
             }
-            c.heart.setVisibility(!albumMode && isFav(it.photo) ? View.VISIBLE : View.GONE);
-            loadThumb(it.photo, c.img);
-            return c;
+            RowView rv = cv instanceof RowView ? (RowView) cv : new RowView(MainActivity.this);
+            rv.bind(r);
+            return rv;
         }
     }
 
@@ -697,7 +872,8 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- helpers
 
     private void refreshGlass() {
-        if (topBar != null) topBar.refresh();
+        if (countPill != null) countPill.refresh();
+        if (backPill != null) backPill.refresh();
         if (tabBar != null) tabBar.refresh();
     }
 
